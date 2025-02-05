@@ -152,7 +152,7 @@ ScLERPInterface::ScLERPInterface( const std::string base_link,
     }
     else
     {
-      if(itr < (manip_chain.getNrOfSegments()-1))
+      if(itr < (manip_chain.getNrOfSegments()))
       {
         manip.modifyEndJointTipPose(t_ref);
       }
