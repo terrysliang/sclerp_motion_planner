@@ -38,46 +38,73 @@ namespace sclerp_interface
 
 ScLERPInterface::ScLERPInterface( const std::string base_link,
                                   const std::string tip_link,
-                                  const ros::NodeHandle &nh)
+                                  const ros::NodeHandle &nh,
+                                  const std::string &urdf_path)
                                   
-  : nh_(nh), name_("ScLERPInterface"), base_link_name(base_link), tip_link_name(tip_link)
+  : nh_(nh), name_("ScLERPInterface"), base_link_name(base_link), tip_link_name(tip_link), local_urdf_file(urdf_path)
 {
 
   init_failed = false;
-  
-  ROS_INFO("Reading URDF from Parameter Server");
+  urdf::Model urdf_model;
+  KDL::Tree robot_tree;
+  KDL::Chain manip_chain;
+  std::map<std::string, urdf::JointSharedPtr> jnt_list;
 
-  if(!urdf_model.initParam("/robot_description"))
+  if (!local_urdf_file.empty())
   {
-    ROS_ERROR("Failed to read URDF file from Parameter Server");
-    init_failed = true;
-  }
-  
-  if(!init_failed)
-  {
-    jnt_list = urdf_model.joints_;
-  
-    nh.param("/robot_description", robot_desc_string, std::string());
-    if(!kdl_parser::treeFromString(robot_desc_string, robot_tree))
+    ROS_INFO("Reading URDF from file: %s", local_urdf_file.c_str());
+
+    if (!urdf_model.initFile(local_urdf_file))
     {
-      ROS_ERROR("Failed to construct kdl tree");
+      ROS_ERROR("Error loading URDF file!");
+      init_failed = true;
+    }
+
+    if (!kdl_parser::treeFromFile(local_urdf_file, robot_tree))
+    {
+      ROS_ERROR("Error constructing KDL Tree!");
+      init_failed = true;
+    }
+  }
+  else
+  {
+    ROS_INFO("Reading URDF from Parameter Server");
+
+    if (!urdf_model.initParam("/my_gen3/robot_description"))
+    {
+      ROS_ERROR("Failed to read URDF from Parameter Server!");
+      init_failed = true;
+    }
+
+    nh.param("/my_gen3/robot_description", robot_desc_string, std::string());
+    if (!kdl_parser::treeFromString(robot_desc_string, robot_tree))
+    {
+      ROS_ERROR("Failed to construct KDL Tree from Parameter Server!");
       init_failed = true;
     }
   }
 
-  if(!init_failed)
+  jnt_list = urdf_model.joints_;
+  if (!robot_tree.getChain(base_link_name, tip_link_name, manip_chain))
   {
-    std::map<std::string, urdf::JointSharedPtr> jnt_list = urdf_model.joints_;
-  
-    if(!robot_tree.getChain(base_link_name, tip_link_name, manip_chain))
-    {
+    ROS_ERROR("Error constructing KDL Chain!");
+    init_failed = true;
+  }
+
+  if (manip_chain.getNrOfSegments() == 0)
+  {
+    ROS_ERROR("KDL Chain is empty!");
+      init_failed = true;
       init_failed = true;
       ROS_ERROR("Failed to construct kdl chain from tree");
     }
+    init_failed = true;
+      ROS_ERROR("Failed to construct kdl chain from tree");
+    }
   }
-  
+
   if(init_failed)
-  {
+  { 
     return;  
   }
 
@@ -141,6 +168,8 @@ ScLERPInterface::ScLERPInterface( const std::string base_link,
 
     t_ref = t_ref * t_tip;
 
+    manip.addStaticTransformation(t_ref);
+
     if(jnt.getType() == KDL::Joint::JointType::RotAxis)
     {
 
@@ -152,7 +181,7 @@ ScLERPInterface::ScLERPInterface( const std::string base_link,
     }
     else
     {
-      if(itr < (manip_chain.getNrOfSegments()-1))
+      if(itr < (manip_chain.getNrOfSegments()))
       {
         manip.modifyEndJointTipPose(t_ref);
       }
@@ -203,6 +232,37 @@ bool ScLERPInterface::solve(const Eigen::VectorXd &init_jnt_values,
                                       g_f,
                                       jnt_trajectory,
                                       ee_trajectory);
+                                      
+  if(plan_result == kinlib::ErrorCodes::OPERATION_SUCCESS)
+  {
+    return true;
+  }
+  else
+  {
+    return false;  
+  }
+                                      
+}
+
+bool ScLERPInterface::solve(const Eigen::VectorXd &init_jnt_values,
+                            const Eigen::Matrix4d &g_f,
+                            const int num_links_ignore,
+                            const std::vector<std::shared_ptr<CollisionUtils::ObstacleBase>> &obstacles,
+                            const std::shared_ptr<CollisionUtils::ObstacleBase> &grasped_object,
+                            trajectory_msgs::JointTrajectory &jnt_trajectory)
+{
+  Eigen::Matrix4d g_i;
+  
+  kinlib_solver_.getFK(init_jnt_values, g_i);
+
+  kinlib::ErrorCodes plan_result = kinlib_solver_.getMotionPlanWithCollisionAvoidance(
+                                      init_jnt_values,
+                                      g_i,
+                                      g_f,
+                                      num_links_ignore,
+                                      obstacles,
+                                      grasped_object,
+                                      jnt_trajectory);
                                       
   if(plan_result == kinlib::ErrorCodes::OPERATION_SUCCESS)
   {
